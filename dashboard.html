@@ -1,0 +1,793 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Eye Blink Controller</title>
+  <style>
+    /* ── Design Tokens ───────────────────────────────────────────────── */
+    :root {
+      --bg:          #0b0d14;
+      --surface:     #111420;
+      --surface2:    #181c2e;
+      --border:      rgba(99,102,241,0.18);
+      --accent:      #6366f1;
+      --accent-dim:  rgba(99,102,241,0.15);
+      --accent-glow: rgba(99,102,241,0.35);
+      --danger:      #ef4444;
+      --danger-dim:  rgba(239,68,68,0.15);
+      --danger-glow: rgba(239,68,68,0.45);
+      --success:     #22c55e;
+      --success-dim: rgba(34,197,94,0.12);
+      --warn:        #f59e0b;
+      --warn-dim:    rgba(245,158,11,0.15);
+      --text:        #e2e8f0;
+      --text-muted:  #64748b;
+      --text-sub:    #94a3b8;
+      --radius:      14px;
+      --radius-sm:   8px;
+      --shadow:      0 4px 24px rgba(0,0,0,0.4);
+      --font-mono:   'JetBrains Mono', 'Fira Mono', 'Courier New', monospace;
+      --font-sans:   'Inter', 'Segoe UI', system-ui, sans-serif;
+    }
+
+    /* ── Reset ───────────────────────────────────────────────────────── */
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    html { font-size: 16px; }
+    body {
+      font-family: var(--font-sans);
+      background: var(--bg);
+      color: var(--text);
+      min-height: 100vh;
+      overflow-x: hidden;
+    }
+
+    /* ── Scanline Texture ────────────────────────────────────────────── */
+    body::before {
+      content: '';
+      position: fixed; inset: 0;
+      background: repeating-linear-gradient(
+        0deg,
+        transparent,
+        transparent 2px,
+        rgba(255,255,255,0.012) 2px,
+        rgba(255,255,255,0.012) 4px
+      );
+      pointer-events: none;
+      z-index: 9999;
+    }
+
+    /* ── Layout ──────────────────────────────────────────────────────── */
+    .app {
+      max-width: 1100px;
+      margin: 0 auto;
+      padding: 24px 20px 48px;
+    }
+
+    /* ── Header ──────────────────────────────────────────────────────── */
+    .header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      margin-bottom: 32px;
+      flex-wrap: wrap;
+    }
+    .header-left { display: flex; align-items: center; gap: 14px; }
+    .eye-icon {
+      width: 44px; height: 44px;
+      background: var(--accent-dim);
+      border: 1.5px solid var(--accent);
+      border-radius: 50%;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 22px;
+      box-shadow: 0 0 18px var(--accent-glow);
+      flex-shrink: 0;
+    }
+    h1 {
+      font-size: clamp(1.15rem, 3vw, 1.5rem);
+      font-weight: 700;
+      letter-spacing: -0.02em;
+      color: var(--text);
+    }
+    h1 span { color: var(--accent); }
+    .subtitle { font-size: 0.78rem; color: var(--text-muted); margin-top: 2px; }
+
+    /* ── Connection Badge ────────────────────────────────────────────── */
+    .conn-badge {
+      display: flex; align-items: center; gap: 8px;
+      padding: 6px 14px;
+      border-radius: 999px;
+      border: 1px solid var(--border);
+      background: var(--surface);
+      font-size: 0.78rem;
+      color: var(--text-sub);
+      transition: all 0.3s;
+      white-space: nowrap;
+    }
+    .conn-dot {
+      width: 8px; height: 8px;
+      border-radius: 50%;
+      background: var(--text-muted);
+      transition: background 0.3s;
+    }
+    .conn-badge.connected { border-color: rgba(34,197,94,0.3); }
+    .conn-badge.connected .conn-dot {
+      background: var(--success);
+      box-shadow: 0 0 6px var(--success);
+      animation: pulse-dot 2s ease-in-out infinite;
+    }
+    .conn-badge.error { border-color: rgba(239,68,68,0.3); }
+    .conn-badge.error .conn-dot { background: var(--danger); }
+
+    @keyframes pulse-dot {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.4; }
+    }
+
+    /* ── IP Config Row ───────────────────────────────────────────────── */
+    .ip-row {
+      display: flex; align-items: center; gap: 10px;
+      margin-bottom: 28px;
+      flex-wrap: wrap;
+    }
+    .ip-row label { font-size: 0.8rem; color: var(--text-muted); white-space: nowrap; }
+    .ip-row input {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      color: var(--text);
+      padding: 7px 13px;
+      border-radius: var(--radius-sm);
+      font-family: var(--font-mono);
+      font-size: 0.82rem;
+      width: 180px;
+      outline: none;
+      transition: border-color 0.2s;
+    }
+    .ip-row input:focus { border-color: var(--accent); }
+    .btn-connect {
+      padding: 7px 18px;
+      background: var(--accent);
+      color: #fff;
+      border: none;
+      border-radius: var(--radius-sm);
+      font-size: 0.82rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: opacity 0.2s, transform 0.1s;
+    }
+    .btn-connect:hover { opacity: 0.88; }
+    .btn-connect:active { transform: scale(0.97); }
+
+    /* ── Grid ────────────────────────────────────────────────────────── */
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(12, 1fr);
+      gap: 16px;
+    }
+
+    /* ── Card Base ───────────────────────────────────────────────────── */
+    .card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 20px;
+      box-shadow: var(--shadow);
+      position: relative;
+      overflow: hidden;
+      transition: border-color 0.3s;
+    }
+    .card::before {
+      content: '';
+      position: absolute; top: 0; left: 0; right: 0;
+      height: 2px;
+      background: linear-gradient(90deg, transparent, var(--accent), transparent);
+      opacity: 0;
+      transition: opacity 0.4s;
+    }
+    .card.active::before { opacity: 1; }
+    .card-label {
+      font-size: 0.7rem;
+      font-weight: 600;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      color: var(--text-muted);
+      margin-bottom: 12px;
+    }
+
+    /* ── Grid Spans ──────────────────────────────────────────────────── */
+    .span-12 { grid-column: span 12; }
+    .span-6  { grid-column: span 6; }
+    .span-4  { grid-column: span 4; }
+    .span-3  { grid-column: span 3; }
+
+    @media (max-width: 820px) {
+      .span-6, .span-4, .span-3 { grid-column: span 12; }
+    }
+    @media (min-width: 821px) and (max-width: 980px) {
+      .span-3 { grid-column: span 6; }
+      .span-4 { grid-column: span 6; }
+    }
+
+    /* ── PERCLOS Gauge ───────────────────────────────────────────────── */
+    #gauge-wrap {
+      display: flex; flex-direction: column; align-items: center; gap: 10px;
+    }
+    .gauge-svg { width: 100%; max-width: 240px; }
+    .gauge-value-text {
+      font-size: clamp(1.8rem, 5vw, 2.8rem);
+      font-weight: 800;
+      font-family: var(--font-mono);
+      color: var(--text);
+      text-align: center;
+      line-height: 1;
+    }
+    .gauge-value-text span { font-size: 0.55em; color: var(--text-muted); margin-left: 2px; }
+    .gauge-label { font-size: 0.72rem; color: var(--text-muted); text-align: center; }
+    .perclos-legend {
+      display: flex; gap: 16px; flex-wrap: wrap; justify-content: center;
+      margin-top: 10px;
+    }
+    .perclos-legend li {
+      list-style: none;
+      display: flex; align-items: center; gap: 6px;
+      font-size: 0.72rem; color: var(--text-sub);
+    }
+    .perclos-legend .dot {
+      width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0;
+    }
+
+    /* ── Eye Status ──────────────────────────────────────────────────── */
+    .eye-status-ring {
+      width: 90px; height: 90px;
+      border-radius: 50%;
+      border: 3px solid var(--border);
+      display: flex; align-items: center; justify-content: center;
+      font-size: 36px;
+      margin: 0 auto 12px;
+      transition: border-color 0.3s, box-shadow 0.3s;
+      background: var(--surface2);
+    }
+    .eye-status-ring.closed {
+      border-color: var(--warn);
+      box-shadow: 0 0 18px var(--warn-dim);
+    }
+    .eye-status-label {
+      text-align: center;
+      font-size: 0.9rem;
+      font-weight: 600;
+      color: var(--text-sub);
+    }
+
+    /* ── Blink Counter ───────────────────────────────────────────────── */
+    .blink-display {
+      display: flex; align-items: flex-end; gap: 6px;
+      justify-content: center;
+      margin: 8px 0;
+    }
+    .blink-num {
+      font-size: clamp(2.5rem, 8vw, 4rem);
+      font-weight: 800;
+      font-family: var(--font-mono);
+      color: var(--accent);
+      line-height: 1;
+    }
+    .blink-sub { font-size: 0.75rem; color: var(--text-muted); padding-bottom: 10px; }
+    .blink-bars {
+      display: flex; gap: 4px; justify-content: center; margin-top: 10px;
+    }
+    .blink-bar {
+      width: 14px; height: 28px;
+      background: var(--surface2);
+      border-radius: 4px;
+      transition: background 0.2s, transform 0.15s;
+    }
+    .blink-bar.lit {
+      background: var(--accent);
+      transform: scaleY(1.1);
+      box-shadow: 0 0 8px var(--accent-glow);
+    }
+
+    /* ── Appliance Cards ─────────────────────────────────────────────── */
+    .appliance-icon {
+      font-size: 28px;
+      width: 56px; height: 56px;
+      border-radius: 12px;
+      background: var(--surface2);
+      display: flex; align-items: center; justify-content: center;
+      margin-bottom: 14px;
+      border: 1px solid var(--border);
+      transition: background 0.3s, border-color 0.3s, box-shadow 0.3s;
+    }
+    .appliance-name {
+      font-size: 1rem; font-weight: 700; margin-bottom: 4px;
+    }
+    .appliance-status {
+      font-size: 0.78rem; color: var(--text-muted);
+      margin-bottom: 16px;
+    }
+    .appliance-status .dot-status {
+      display: inline-block; width: 7px; height: 7px;
+      border-radius: 50%; background: var(--text-muted);
+      margin-right: 5px; vertical-align: middle;
+      transition: background 0.3s;
+    }
+
+    /* ON state */
+    .card.on .appliance-icon {
+      background: rgba(34,197,94,0.12);
+      border-color: rgba(34,197,94,0.3);
+      box-shadow: 0 0 18px rgba(34,197,94,0.2);
+    }
+    .card.on .dot-status { background: var(--success); box-shadow: 0 0 6px var(--success); }
+    .card.on .appliance-status { color: var(--success); }
+    .card.on::before { opacity: 1; background: linear-gradient(90deg, transparent, var(--success), transparent); }
+
+    /* Toggle Switch */
+    .toggle-wrap { display: flex; align-items: center; gap: 12px; }
+    .toggle-label { font-size: 0.8rem; color: var(--text-muted); }
+    .toggle {
+      position: relative; width: 52px; height: 28px;
+      cursor: pointer;
+    }
+    .toggle input { opacity: 0; width: 0; height: 0; position: absolute; }
+    .toggle-track {
+      position: absolute; inset: 0;
+      background: var(--surface2);
+      border-radius: 999px;
+      border: 1.5px solid var(--border);
+      transition: background 0.25s, border-color 0.25s;
+    }
+    .toggle-thumb {
+      position: absolute;
+      top: 4px; left: 4px;
+      width: 18px; height: 18px;
+      border-radius: 50%;
+      background: var(--text-muted);
+      transition: transform 0.25s, background 0.25s;
+    }
+    .toggle input:checked ~ .toggle-track {
+      background: rgba(34,197,94,0.2); border-color: var(--success);
+    }
+    .toggle input:checked ~ .toggle-thumb {
+      transform: translateX(24px); background: var(--success);
+      box-shadow: 0 0 8px var(--success);
+    }
+
+    /* ── Alert Banner ────────────────────────────────────────────────── */
+    .alert-banner {
+      grid-column: span 12;
+      background: var(--danger-dim);
+      border: 1.5px solid var(--danger);
+      border-radius: var(--radius);
+      padding: 16px 20px;
+      display: none;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      animation: alert-flash 0.7s ease-in-out infinite alternate;
+    }
+    .alert-banner.visible { display: flex; }
+    @keyframes alert-flash {
+      from { box-shadow: 0 0 12px var(--danger-glow); border-color: var(--danger); }
+      to   { box-shadow: 0 0 30px var(--danger-glow); border-color: #ff6b6b; }
+    }
+    .alert-text { display: flex; align-items: center; gap: 10px; }
+    .alert-icon { font-size: 22px; }
+    .alert-msg  { font-size: 0.9rem; font-weight: 700; color: var(--danger); }
+    .alert-sub  { font-size: 0.75rem; color: var(--text-sub); margin-top: 2px; }
+    .btn-ack {
+      padding: 7px 16px;
+      background: transparent;
+      color: var(--danger);
+      border: 1px solid var(--danger);
+      border-radius: var(--radius-sm);
+      font-size: 0.78rem; font-weight: 700;
+      cursor: pointer;
+      transition: background 0.2s;
+      white-space: nowrap;
+    }
+    .btn-ack:hover { background: var(--danger-dim); }
+
+    /* ── Event Log ───────────────────────────────────────────────────── */
+    .log-list {
+      height: 180px;
+      overflow-y: auto;
+      display: flex; flex-direction: column; gap: 6px;
+    }
+    .log-list::-webkit-scrollbar { width: 4px; }
+    .log-list::-webkit-scrollbar-track { background: transparent; }
+    .log-list::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+    .log-item {
+      display: flex; gap: 10px; align-items: flex-start;
+      font-size: 0.75rem; padding: 6px 10px;
+      border-radius: 6px;
+      background: var(--surface2);
+      border-left: 3px solid transparent;
+      animation: log-in 0.25s ease;
+    }
+    @keyframes log-in {
+      from { opacity: 0; transform: translateY(-4px); }
+      to   { opacity: 1; transform: translateY(0); }
+    }
+    .log-item.info    { border-color: var(--accent); }
+    .log-item.warn    { border-color: var(--warn); }
+    .log-item.danger  { border-color: var(--danger); }
+    .log-item.success { border-color: var(--success); }
+    .log-time { color: var(--text-muted); flex-shrink: 0; font-family: var(--font-mono); }
+    .log-msg  { color: var(--text-sub); }
+
+    /* ── Footer ──────────────────────────────────────────────────────── */
+    .footer {
+      margin-top: 32px;
+      text-align: center;
+      font-size: 0.72rem;
+      color: var(--text-muted);
+    }
+
+    /* ── Animations ──────────────────────────────────────────────────── */
+    @keyframes fadein { from { opacity:0; transform:translateY(8px); } to { opacity:1; transform:none; } }
+    .card { animation: fadein 0.4s ease both; }
+    .card:nth-child(1) { animation-delay: 0.05s; }
+    .card:nth-child(2) { animation-delay: 0.10s; }
+    .card:nth-child(3) { animation-delay: 0.15s; }
+    .card:nth-child(4) { animation-delay: 0.20s; }
+    .card:nth-child(5) { animation-delay: 0.25s; }
+    .card:nth-child(6) { animation-delay: 0.30s; }
+
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after { animation: none !important; transition: none !important; }
+    }
+  </style>
+</head>
+
+<body>
+<div class="app">
+
+  <!-- ── Header ─────────────────────────────────────────────────────── -->
+  <header class="header">
+    <div class="header-left">
+      <div class="eye-icon">👁</div>
+      <div>
+        <h1>Eye Blink <span>Controller</span></h1>
+        <div class="subtitle">Assistive Technology Dashboard · ESP32</div>
+      </div>
+    </div>
+    <div class="conn-badge" id="connBadge">
+      <div class="conn-dot"></div>
+      <span id="connLabel">Disconnected</span>
+    </div>
+  </header>
+
+  <!-- ── IP Config ──────────────────────────────────────────────────── -->
+  <div class="ip-row">
+    <label for="ipInput">ESP32 IP:</label>
+    <input id="ipInput" type="text" value="192.168.1.100" placeholder="192.168.x.x" />
+    <button class="btn-connect" onclick="connectWS()">Connect</button>
+  </div>
+
+  <!-- ── Main Grid ──────────────────────────────────────────────────── -->
+  <div class="grid" id="mainGrid">
+
+    <!-- Alert Banner -->
+    <div class="alert-banner" id="alertBanner">
+      <div class="alert-text">
+        <span class="alert-icon">🚨</span>
+        <div>
+          <div class="alert-msg" id="alertMsg">Emergency Alert</div>
+          <div class="alert-sub" id="alertSub">Alert triggered by blink pattern</div>
+        </div>
+      </div>
+      <button class="btn-ack" onclick="acknowledgeAlert()">Acknowledge</button>
+    </div>
+
+    <!-- PERCLOS Gauge -->
+    <div class="card span-4" id="perclosCard">
+      <div class="card-label">PERCLOS · 60 s Window</div>
+      <div id="gauge-wrap">
+        <svg class="gauge-svg" viewBox="0 0 200 130" id="gaugeSVG">
+          <!-- Background arc -->
+          <path id="gaugeTrack"
+            d="M 20 110 A 80 80 0 0 1 180 110"
+            fill="none" stroke="#1e2235" stroke-width="16"
+            stroke-linecap="round"/>
+          <!-- Value arc -->
+          <path id="gaugeArc"
+            d="M 20 110 A 80 80 0 0 1 180 110"
+            fill="none" stroke="url(#gaugeGrad)" stroke-width="16"
+            stroke-linecap="round"
+            stroke-dasharray="251"
+            stroke-dashoffset="251"/>
+          <defs>
+            <linearGradient id="gaugeGrad" x1="0%" y1="0%" x2="100%" y2="0%">
+              <stop offset="0%"   stop-color="#22c55e"/>
+              <stop offset="60%"  stop-color="#f59e0b"/>
+              <stop offset="100%" stop-color="#ef4444"/>
+            </linearGradient>
+          </defs>
+          <!-- Tick marks -->
+          <text x="14" y="124" fill="#475569" font-size="9" text-anchor="middle">0</text>
+          <text x="186" y="124" fill="#475569" font-size="9" text-anchor="middle">100</text>
+          <text x="100" y="28" fill="#475569" font-size="9" text-anchor="middle">50</text>
+        </svg>
+        <div class="gauge-value-text"><span id="perclosVal">0</span><span>%</span></div>
+        <div class="gauge-label">Percentage of Eye Closure</div>
+        <ul class="perclos-legend">
+          <li><span class="dot" style="background:#22c55e"></span>Alert (0–30%)</li>
+          <li><span class="dot" style="background:#f59e0b"></span>Drowsy (30–70%)</li>
+          <li><span class="dot" style="background:#ef4444"></span>Danger (&gt;70%)</li>
+        </ul>
+      </div>
+    </div>
+
+    <!-- Eye Status -->
+    <div class="card span-4" id="eyeCard">
+      <div class="card-label">Eye Status</div>
+      <div id="eyeStatusRing" class="eye-status-ring">👁</div>
+      <div class="eye-status-label" id="eyeStatusLabel">Eyes Open</div>
+      <div style="margin-top:18px; border-top:1px solid var(--border); padding-top:14px;">
+        <div class="card-label" style="margin-bottom:6px;">Closed Duration Timer</div>
+        <div style="font-size:1.6rem; font-weight:800; font-family:var(--font-mono); color:var(--warn); text-align:center;" id="eyeTimer">0.0 s</div>
+      </div>
+    </div>
+
+    <!-- Blink Counter -->
+    <div class="card span-4" id="blinkCard">
+      <div class="card-label">Blink Sequence</div>
+      <div class="blink-display">
+        <div class="blink-num" id="blinkNum">0</div>
+        <div class="blink-sub">blinks</div>
+      </div>
+      <div class="blink-bars" id="blinkBars">
+        <!-- 7 bars -->
+        <div class="blink-bar" id="bar1"></div>
+        <div class="blink-bar" id="bar2"></div>
+        <div class="blink-bar" id="bar3"></div>
+        <div class="blink-bar" id="bar4"></div>
+        <div class="blink-bar" id="bar5"></div>
+        <div class="blink-bar" id="bar6"></div>
+        <div class="blink-bar" id="bar7"></div>
+      </div>
+      <div style="margin-top:14px; font-size:0.72rem; color:var(--text-muted); text-align:center;" id="blinkHint">
+        Waiting for blinks…
+      </div>
+    </div>
+
+    <!-- Appliance 1 -->
+    <div class="card span-6" id="appl1Card">
+      <div class="card-label">Appliance 1 · GPIO 14</div>
+      <div class="appliance-icon" id="appl1Icon">💡</div>
+      <div class="appliance-name">Appliance 1</div>
+      <div class="appliance-status">
+        <span class="dot-status" id="appl1Dot"></span>
+        <span id="appl1StatusText">Off</span>
+      </div>
+      <div class="toggle-wrap">
+        <label class="toggle">
+          <input type="checkbox" id="appl1Toggle" onchange="toggleAppliance(1)" />
+          <div class="toggle-track"></div>
+          <div class="toggle-thumb"></div>
+        </label>
+        <span class="toggle-label">Manual Control</span>
+      </div>
+    </div>
+
+    <!-- Appliance 2 -->
+    <div class="card span-6" id="appl2Card">
+      <div class="card-label">Appliance 2 · GPIO 18</div>
+      <div class="appliance-icon" id="appl2Icon">🔌</div>
+      <div class="appliance-name">Appliance 2</div>
+      <div class="appliance-status">
+        <span class="dot-status" id="appl2Dot"></span>
+        <span id="appl2StatusText">Off</span>
+      </div>
+      <div class="toggle-wrap">
+        <label class="toggle">
+          <input type="checkbox" id="appl2Toggle" onchange="toggleAppliance(2)" />
+          <div class="toggle-track"></div>
+          <div class="toggle-thumb"></div>
+        </label>
+        <span class="toggle-label">Manual Control</span>
+      </div>
+    </div>
+
+    <!-- Event Log -->
+    <div class="card span-12">
+      <div class="card-label">Event Log</div>
+      <div class="log-list" id="logList">
+        <div class="log-item info">
+          <span class="log-time">--:--:--</span>
+          <span class="log-msg">Dashboard ready. Enter ESP32 IP and connect.</span>
+        </div>
+      </div>
+    </div>
+
+  </div><!-- /grid -->
+
+  <footer class="footer">Eye Blink Controller · ESP32 · Built for Assistive Technology</footer>
+</div><!-- /app -->
+
+<script>
+/* ─── WebSocket ──────────────────────────────────────────────────────────── */
+let ws = null;
+let reconnectTimer = null;
+let eyeClosedStart = null;
+let eyeTimerInterval = null;
+
+function connectWS() {
+  const ip = document.getElementById('ipInput').value.trim();
+  if (!ip) return;
+  if (ws) { ws.close(); ws = null; }
+  clearTimeout(reconnectTimer);
+  setConnStatus('connecting');
+  try {
+    ws = new WebSocket(`ws://${ip}:81`);
+    ws.onopen    = () => { setConnStatus('connected'); addLog('WebSocket connected to ' + ip, 'info'); };
+    ws.onmessage = e => handleMessage(JSON.parse(e.data));
+    ws.onclose   = () => { setConnStatus('error'); addLog('Connection lost – retrying in 4 s…', 'warn');
+                            reconnectTimer = setTimeout(() => connectWS(), 4000); };
+    ws.onerror   = () => { setConnStatus('error'); };
+  } catch(err) {
+    setConnStatus('error'); addLog('Connection error: ' + err.message, 'danger');
+  }
+}
+
+function sendWS(cmd) {
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify({ cmd }));
+  } else {
+    addLog('Not connected – command dropped.', 'warn');
+  }
+}
+
+/* ─── Status Update ──────────────────────────────────────────────────────── */
+let prevState = {};
+
+function handleMessage(data) {
+  updateRelay(1, data.relay1);
+  updateRelay(2, data.relay2);
+  updateAlert(data.alert || data.emergency, data.emergency);
+  updateEyeStatus(data.eyesClosed);
+  updateBlink(data.blinkCount || 0);
+  updatePERCLOS(data.perclos || 0);
+
+  // Log notable changes
+  if (data.relay1 !== prevState.relay1) addLog(`Appliance 1 turned ${data.relay1 ? 'ON' : 'OFF'}`, data.relay1 ? 'success' : 'info');
+  if (data.relay2 !== prevState.relay2) addLog(`Appliance 2 turned ${data.relay2 ? 'ON' : 'OFF'}`, data.relay2 ? 'success' : 'info');
+  if (data.alert && !prevState.alert)   addLog('⚠ Emergency alert triggered!', 'danger');
+  if (!data.alert && prevState.alert)   addLog('Alert cleared', 'info');
+  prevState = {...data};
+}
+
+/* ─── Relay / Appliance ──────────────────────────────────────────────────── */
+function updateRelay(n, state) {
+  const card  = document.getElementById(`appl${n}Card`);
+  const text  = document.getElementById(`appl${n}StatusText`);
+  const tog   = document.getElementById(`appl${n}Toggle`);
+
+  card.classList.toggle('on', !!state);
+  text.textContent = state ? 'On' : 'Off';
+  tog.checked = !!state;
+}
+
+function toggleAppliance(n) {
+  const tog = document.getElementById(`appl${n}Toggle`);
+  const state = tog.checked;
+  sendWS(`relay${n}_${state ? 'on' : 'off'}`);
+  addLog(`Manual: Appliance ${n} → ${state ? 'ON' : 'OFF'}`, state ? 'success' : 'info');
+}
+
+/* ─── Alert ──────────────────────────────────────────────────────────────── */
+function updateAlert(active, emergency) {
+  const banner = document.getElementById('alertBanner');
+  const msg    = document.getElementById('alertMsg');
+  const sub    = document.getElementById('alertSub');
+  banner.classList.toggle('visible', !!active);
+  if (emergency) {
+    msg.textContent = '🚨 Emergency Alert';
+    sub.textContent = 'Eyes closed too long or emergency blink pattern detected.';
+  } else if (active) {
+    msg.textContent = '⚠ Alert Active';
+    sub.textContent = 'Blink-triggered alert. Acknowledge to silence.';
+  }
+}
+
+function acknowledgeAlert() {
+  sendWS('alert_ack');
+  addLog('Alert acknowledged by user', 'info');
+}
+
+/* ─── Eye Status ─────────────────────────────────────────────────────────── */
+function updateEyeStatus(closed) {
+  const ring  = document.getElementById('eyeStatusRing');
+  const label = document.getElementById('eyeStatusLabel');
+  ring.textContent = closed ? '😑' : '👁';
+  ring.classList.toggle('closed', !!closed);
+  label.textContent = closed ? 'Eyes Closed' : 'Eyes Open';
+
+  if (closed && !eyeClosedStart) {
+    eyeClosedStart = Date.now();
+    eyeTimerInterval = setInterval(updateEyeTimer, 100);
+  } else if (!closed) {
+    eyeClosedStart = null;
+    clearInterval(eyeTimerInterval);
+    document.getElementById('eyeTimer').textContent = '0.0 s';
+    document.getElementById('eyeTimer').style.color = 'var(--warn)';
+  }
+}
+
+function updateEyeTimer() {
+  if (!eyeClosedStart) return;
+  const sec = (Date.now() - eyeClosedStart) / 1000;
+  const el = document.getElementById('eyeTimer');
+  el.textContent = sec.toFixed(1) + ' s';
+  el.style.color = sec >= 3 ? 'var(--danger)' : sec >= 1.5 ? 'var(--warn)' : 'var(--text-sub)';
+}
+
+/* ─── Blink Bars ─────────────────────────────────────────────────────────── */
+const blinkHints = {
+  0: 'Waiting for blinks…',
+  1: '1 blink — no action',
+  2: '2 blinks — 🚨 Emergency alert!',
+  3: '3 blinks — Toggle Appliance 1',
+  4: '4 blinks — Toggle Appliance 2',
+  5: '5 blinks — No defined action',
+  6: '6 blinks — No defined action',
+  7: '>6 blinks — 🚨 Emergency alert!',
+};
+
+function updateBlink(count) {
+  document.getElementById('blinkNum').textContent = count;
+  for (let i = 1; i <= 7; i++) {
+    document.getElementById(`bar${i}`).classList.toggle('lit', i <= count);
+  }
+  const hint = blinkHints[Math.min(count, 7)] || `${count} blinks`;
+  document.getElementById('blinkHint').textContent = hint;
+}
+
+/* ─── PERCLOS Gauge ──────────────────────────────────────────────────────── */
+function updatePERCLOS(pct) {
+  document.getElementById('perclosVal').textContent = Math.round(pct);
+
+  // Arc length: 251 is the total arc length for the half-circle
+  const arcLen = 251;
+  const offset = arcLen - (arcLen * Math.min(pct, 100) / 100);
+  document.getElementById('gaugeArc').setAttribute('stroke-dashoffset', offset.toFixed(1));
+
+  // Color the PERCLOS card label
+  const card = document.getElementById('perclosCard');
+  card.classList.toggle('active', pct > 30);
+}
+
+/* ─── Event Log ──────────────────────────────────────────────────────────── */
+const MAX_LOG = 60;
+function addLog(msg, type = 'info') {
+  const list = document.getElementById('logList');
+  const now  = new Date();
+  const time = now.toTimeString().split(' ')[0];
+  const item = document.createElement('div');
+  item.className = `log-item ${type}`;
+  item.innerHTML = `<span class="log-time">${time}</span><span class="log-msg">${msg}</span>`;
+  list.insertBefore(item, list.firstChild);
+  if (list.children.length > MAX_LOG) list.removeChild(list.lastChild);
+}
+
+/* ─── Connection Status ──────────────────────────────────────────────────── */
+function setConnStatus(status) {
+  const badge = document.getElementById('connBadge');
+  const label = document.getElementById('connLabel');
+  badge.className = 'conn-badge ' + status;
+  label.textContent = { connected: 'Connected', connecting: 'Connecting…', error: 'Disconnected' }[status] || 'Disconnected';
+}
+
+/* ─── Auto-connect if IP is pre-filled ──────────────────────────────────── */
+window.addEventListener('load', () => {
+  // If running on the ESP32 itself, connect automatically
+  if (location.hostname !== 'localhost' && location.hostname !== '127.0.0.1' && location.hostname !== '') {
+    document.getElementById('ipInput').value = location.hostname;
+    connectWS();
+  }
+});
+</script>
+</body>
+</html>
