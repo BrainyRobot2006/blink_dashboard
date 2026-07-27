@@ -1,0 +1,1517 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>Eye Blink · Patient Monitor</title>
+<meta name="description" content="Real-time assistive technology dashboard for paralysed patient monitoring — eye blink detection, vitals tracking, appliance control via ESP32 + MAX30102 + Firebase"/>
+
+<!-- Google Fonts — Inter for UI, JetBrains Mono for data -->
+<link rel="preconnect" href="https://fonts.googleapis.com"/>
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin/>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;800;900&family=JetBrains+Mono:wght@400;700;800&display=swap" rel="stylesheet"/>
+
+<!-- Chart.js for trend charts -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<!-- Firebase SDK (v10 compat) -->
+<script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-database-compat.js"></script>
+<!-- Jitsi Meet External API -->
+<script src="https://meet.jit.si/external_api.js"></script>
+
+<style>
+/* ═══════════════════════════════════════════════════════
+   DESIGN TOKENS
+   Clinical dark theme — steel-blue accent, medical green
+   for OK vitals, amber/red for alerts.
+   Signature element: the pulsing vital rings.
+═══════════════════════════════════════════════════════ */
+:root {
+  --bg0:          #050a14;
+  --bg1:          #0a1120;
+  --bg2:          #0f1a2e;
+  --bg3:          #162035;
+  --border:       rgba(56,189,248,0.12);
+  --border-m:     rgba(56,189,248,0.22);
+
+  --sky:          #38bdf8;
+  --sky-dim:      rgba(56,189,248,0.10);
+  --sky-glow:     rgba(56,189,248,0.30);
+
+  --green:        #22d3a5;
+  --green-dim:    rgba(34,211,165,0.10);
+  --green-glow:   rgba(34,211,165,0.30);
+
+  --red:          #f87171;
+  --red-dim:      rgba(248,113,113,0.12);
+  --red-glow:     rgba(248,113,113,0.40);
+
+  --amber:        #fbbf24;
+  --amber-dim:    rgba(251,191,36,0.10);
+  --amber-glow:   rgba(251,191,36,0.30);
+
+  --purple:       #a78bfa;
+  --purple-dim:   rgba(167,139,250,0.10);
+
+  --text:         #e2e8f0;
+  --text-sub:     #94a3b8;
+  --text-muted:   #475569;
+  --text-dim:     #334155;
+
+  --radius:       14px;
+  --radius-sm:    8px;
+  --shadow:       0 8px 32px rgba(0,0,0,0.5);
+
+  --font-sans:    'Inter', 'Segoe UI', system-ui, sans-serif;
+  --font-mono:    'JetBrains Mono', 'Fira Mono', 'Courier New', monospace;
+}
+
+/* ─── Reset ───────────────────────────────────────────── */
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+html { font-size: 16px; scroll-behavior: smooth; }
+body {
+  font-family: var(--font-sans);
+  background: var(--bg0);
+  color: var(--text);
+  min-height: 100vh;
+  overflow-x: hidden;
+}
+
+/* Subtle grid texture */
+body::before {
+  content: '';
+  position: fixed; inset: 0; z-index: 0; pointer-events: none;
+  background-image:
+    linear-gradient(rgba(56,189,248,0.015) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(56,189,248,0.015) 1px, transparent 1px);
+  background-size: 40px 40px;
+}
+
+/* ─── App Shell ───────────────────────────────────────── */
+.app {
+  position: relative; z-index: 1;
+  max-width: 1280px;
+  margin: 0 auto;
+  padding: 20px 20px 60px;
+}
+
+/* ─── Top Bar ─────────────────────────────────────────── */
+.topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 6px;
+  flex-wrap: wrap;
+}
+.brand { display: flex; align-items: center; gap: 12px; }
+.brand-icon {
+  width: 42px; height: 42px;
+  border-radius: 10px;
+  background: var(--sky-dim);
+  border: 1px solid var(--sky);
+  display: flex; align-items: center; justify-content: center;
+  font-size: 20px;
+  box-shadow: 0 0 20px var(--sky-glow);
+  animation: icon-pulse 3s ease-in-out infinite;
+}
+@keyframes icon-pulse {
+  0%,100% { box-shadow: 0 0 12px var(--sky-glow); }
+  50%      { box-shadow: 0 0 28px var(--sky-glow); }
+}
+.brand-text h1 {
+  font-size: clamp(1rem, 2.5vw, 1.3rem);
+  font-weight: 700;
+  letter-spacing: -0.03em;
+  color: var(--text);
+}
+.brand-text h1 span { color: var(--sky); }
+.brand-text p { font-size: 0.72rem; color: var(--text-muted); margin-top: 1px; }
+
+.topbar-right { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+
+/* Connection pill */
+.conn-pill {
+  display: flex; align-items: center; gap: 7px;
+  padding: 5px 13px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--bg1);
+  font-size: 0.75rem;
+  color: var(--text-sub);
+  transition: border-color .3s;
+}
+.conn-pill.ok  { border-color: rgba(34,211,165,.35); }
+.conn-pill.err { border-color: rgba(248,113,113,.35); }
+.conn-dot {
+  width: 7px; height: 7px; border-radius: 50%;
+  background: var(--text-muted); transition: background .3s, box-shadow .3s;
+}
+.conn-pill.ok .conn-dot {
+  background: var(--green);
+  box-shadow: 0 0 6px var(--green-glow);
+  animation: blink-dot 2s ease-in-out infinite;
+}
+.conn-pill.err .conn-dot { background: var(--red); }
+@keyframes blink-dot { 0%,100%{opacity:1} 50%{opacity:.3} }
+
+/* ─── Config Row ──────────────────────────────────────── */
+.config-row {
+  display: flex; align-items: center; gap: 10px;
+  margin: 14px 0 22px;
+  flex-wrap: wrap;
+  padding: 14px 16px;
+  background: var(--bg1);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+.config-row label { font-size: 0.75rem; color: var(--text-muted); white-space: nowrap; }
+.cfg-input {
+  background: var(--bg2);
+  border: 1px solid var(--border-m);
+  color: var(--text);
+  padding: 6px 12px;
+  border-radius: 6px;
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+  width: 160px;
+  outline: none;
+  transition: border-color .2s;
+}
+.cfg-input:focus { border-color: var(--sky); }
+.btn {
+  padding: 6px 16px;
+  border: none;
+  border-radius: 6px;
+  font-size: 0.78rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: opacity .2s, transform .1s;
+}
+.btn:active { transform: scale(.97); }
+.btn-sky    { background: var(--sky);   color: #050a14; }
+.btn-outline { background: transparent; color: var(--text-sub); border: 1px solid var(--border-m); }
+.btn:hover  { opacity: .85; }
+
+/* ─── Alert Banner ────────────────────────────────────── */
+.alert-banner {
+  display: none;
+  align-items: center; justify-content: space-between; gap: 12px;
+  padding: 14px 18px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--red);
+  background: var(--red-dim);
+  margin-bottom: 18px;
+  animation: alert-flash .6s ease-in-out infinite alternate;
+}
+.alert-banner.show { display: flex; }
+@keyframes alert-flash {
+  from { box-shadow: 0 0 10px var(--red-glow); }
+  to   { box-shadow: 0 0 28px var(--red-glow); }
+}
+.alert-left { display: flex; align-items: center; gap: 12px; }
+.alert-icon { font-size: 22px; }
+.alert-msg  { font-size: .9rem; font-weight: 700; color: var(--red); }
+.alert-sub  { font-size: .72rem; color: var(--text-sub); margin-top: 2px; }
+
+/* ─── Grid ────────────────────────────────────────────── */
+.grid {
+  display: grid;
+  grid-template-columns: repeat(12, 1fr);
+  gap: 14px;
+}
+.g12 { grid-column: span 12; }
+.g6  { grid-column: span 6; }
+.g4  { grid-column: span 4; }
+.g3  { grid-column: span 3; }
+.g8  { grid-column: span 8; }
+
+@media(max-width:900px) {
+  .g6,.g4,.g3,.g8 { grid-column: span 12; }
+}
+@media(min-width:901px) and (max-width:1100px) {
+  .g3 { grid-column: span 6; }
+  .g4 { grid-column: span 6; }
+  .g8 { grid-column: span 12; }
+}
+
+/* ─── Card ────────────────────────────────────────────── */
+.card {
+  background: var(--bg1);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 18px 20px;
+  position: relative;
+  overflow: hidden;
+  animation: fadein .4s ease both;
+}
+.card::after {
+  content: '';
+  position: absolute; top: 0; left: 16px; right: 16px;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, var(--sky-dim), transparent);
+}
+@keyframes fadein {
+  from { opacity: 0; transform: translateY(10px); }
+  to   { opacity: 1; transform: none; }
+}
+.card:nth-child(1)  { animation-delay:.05s }
+.card:nth-child(2)  { animation-delay:.10s }
+.card:nth-child(3)  { animation-delay:.15s }
+.card:nth-child(4)  { animation-delay:.20s }
+.card:nth-child(5)  { animation-delay:.25s }
+.card:nth-child(6)  { animation-delay:.30s }
+.card:nth-child(7)  { animation-delay:.35s }
+.card:nth-child(8)  { animation-delay:.40s }
+
+.card-eyebrow {
+  font-size: 0.65rem;
+  font-weight: 600;
+  letter-spacing: .12em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  margin-bottom: 14px;
+}
+
+/* ─── Vital Ring (signature element) ─────────────────── */
+.vital-ring-wrap {
+  display: flex; flex-direction: column; align-items: center;
+}
+.vital-ring {
+  position: relative;
+  width: 104px; height: 104px;
+  display: flex; align-items: center; justify-content: center;
+  margin-bottom: 10px;
+}
+.vital-ring svg {
+  position: absolute; inset: 0;
+  width: 100%; height: 100%;
+  transform: rotate(-90deg);
+}
+.vr-track { fill: none; stroke: var(--bg3); stroke-width: 5; }
+.vr-fill  { fill: none; stroke-width: 5; stroke-linecap: round;
+            stroke-dasharray: 283; stroke-dashoffset: 283;
+            transition: stroke-dashoffset .8s ease, stroke .5s; }
+.vital-inner {
+  display: flex; flex-direction: column; align-items: center; z-index: 1;
+}
+.vital-num {
+  font-size: 1.7rem; font-weight: 800;
+  font-family: var(--font-mono);
+  line-height: 1;
+  color: var(--text);
+  transition: color .4s;
+}
+.vital-unit { font-size: .6rem; color: var(--text-muted); margin-top: 2px; }
+.vital-label {
+  font-size: .78rem; font-weight: 600; color: var(--text-sub); text-align: center;
+}
+.vital-status {
+  font-size: .68rem; margin-top: 4px; font-weight: 600;
+  color: var(--green); text-align: center;
+  transition: color .4s;
+}
+.vital-status.warn { color: var(--amber); }
+.vital-status.danger { color: var(--red); }
+
+/* ─── PERCLOS Gauge ───────────────────────────────────── */
+.perclos-wrap {
+  display: flex; flex-direction: column; align-items: center; gap: 8px;
+}
+.perclos-arc-svg { width: 100%; max-width: 210px; }
+.perclos-val {
+  font-size: 2.2rem; font-weight: 800;
+  font-family: var(--font-mono);
+  color: var(--text); line-height: 1;
+  text-align: center;
+}
+.perclos-val span { font-size: .55em; color: var(--text-muted); }
+.perclos-lbl { font-size: .7rem; color: var(--text-muted); text-align: center; }
+.perclos-warn-text {
+  font-size: .72rem; font-weight: 700; color: var(--red);
+  text-align: center; margin-top: 4px;
+  display: none;
+  animation: alert-flash .6s ease-in-out infinite alternate;
+}
+.perclos-warn-text.show { display: block; }
+.perclos-zones {
+  display: flex; gap: 10px; justify-content: center; flex-wrap: wrap; margin-top: 8px;
+}
+.pz { display: flex; align-items: center; gap: 5px; font-size: .68rem; color: var(--text-sub); }
+.pz-dot { width: 7px; height: 7px; border-radius: 50%; }
+
+/* ─── Eye Status ──────────────────────────────────────── */
+.eye-orb {
+  width: 86px; height: 86px;
+  border-radius: 50%;
+  border: 2.5px solid var(--border-m);
+  background: var(--bg2);
+  display: flex; align-items: center; justify-content: center;
+  font-size: 32px;
+  margin: 0 auto 12px;
+  transition: border-color .3s, box-shadow .3s;
+}
+.eye-orb.closed {
+  border-color: var(--amber);
+  box-shadow: 0 0 22px var(--amber-glow);
+}
+.eye-status-text {
+  text-align: center; font-size: .85rem; font-weight: 600; color: var(--text-sub);
+}
+.eye-timer {
+  text-align: center;
+  font-size: 1.4rem; font-weight: 800; font-family: var(--font-mono);
+  color: var(--text-sub);
+  margin-top: 12px;
+  transition: color .3s;
+}
+.eye-timer.warn   { color: var(--amber); }
+.eye-timer.danger { color: var(--red); }
+
+/* ─── Blink Counter ───────────────────────────────────── */
+.blink-num-row { display: flex; align-items: baseline; gap: 6px; }
+.blink-big {
+  font-size: 4rem; font-weight: 900;
+  font-family: var(--font-mono);
+  color: var(--sky); line-height: 1;
+}
+.blink-sub { font-size: .75rem; color: var(--text-muted); }
+.blink-bars { display: flex; gap: 5px; margin-top: 10px; }
+.bb {
+  flex: 1; height: 26px;
+  background: var(--bg3);
+  border-radius: 4px;
+  transition: background .15s, transform .12s, box-shadow .15s;
+}
+.bb.lit {
+  background: var(--sky);
+  transform: scaleY(1.08);
+  box-shadow: 0 0 8px var(--sky-glow);
+}
+.blink-hint {
+  font-size: .72rem; color: var(--text-muted);
+  margin-top: 8px; text-align: center;
+  min-height: 1em;
+}
+
+/* ─── Appliance Toggle ────────────────────────────────── */
+.appl-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 14px; }
+.appl-icon {
+  width: 52px; height: 52px;
+  border-radius: 10px;
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  display: flex; align-items: center; justify-content: center;
+  font-size: 24px;
+  transition: background .3s, border-color .3s, box-shadow .3s;
+}
+.appl-name { font-size: .95rem; font-weight: 700; margin-bottom: 3px; }
+.appl-state { font-size: .72rem; display: flex; align-items: center; gap: 5px; }
+.appl-dot {
+  width: 6px; height: 6px; border-radius: 50%;
+  background: var(--text-muted); transition: background .3s;
+}
+.card.appl-on .appl-icon {
+  background: var(--green-dim); border-color: rgba(34,211,165,.35);
+  box-shadow: 0 0 16px var(--green-glow);
+}
+.card.appl-on .appl-dot  { background: var(--green); box-shadow: 0 0 5px var(--green-glow); }
+.card.appl-on .appl-state { color: var(--green); }
+
+/* Switch */
+.switch { position: relative; width: 50px; height: 26px; cursor: pointer; }
+.switch input { opacity: 0; position: absolute; }
+.sw-track {
+  position: absolute; inset: 0;
+  background: var(--bg3);
+  border-radius: 999px;
+  border: 1.5px solid var(--border-m);
+  transition: background .25s, border-color .25s;
+}
+.sw-thumb {
+  position: absolute; top: 3px; left: 3px;
+  width: 18px; height: 18px; border-radius: 50%;
+  background: var(--text-muted);
+  transition: transform .25s, background .25s, box-shadow .25s;
+}
+.switch input:checked ~ .sw-track { background: var(--green-dim); border-color: var(--green); }
+.switch input:checked ~ .sw-thumb { transform: translateX(24px); background: var(--green); box-shadow: 0 0 8px var(--green-glow); }
+
+/* ─── Log ─────────────────────────────────────────────── */
+.log-scroll {
+  height: 160px; overflow-y: auto;
+  display: flex; flex-direction: column; gap: 5px;
+}
+.log-scroll::-webkit-scrollbar { width: 3px; }
+.log-scroll::-webkit-scrollbar-track { background: transparent; }
+.log-scroll::-webkit-scrollbar-thumb { background: var(--border-m); border-radius: 2px; }
+.log-item {
+  display: flex; gap: 10px; align-items: flex-start;
+  font-size: .72rem; padding: 5px 9px;
+  border-radius: 5px;
+  background: var(--bg2);
+  border-left: 2.5px solid var(--border);
+  animation: log-slide .2s ease;
+}
+@keyframes log-slide { from { opacity:0; transform:translateY(-3px); } to { opacity:1; } }
+.log-item.info    { border-color: var(--sky);    }
+.log-item.success { border-color: var(--green);  }
+.log-item.warn    { border-color: var(--amber);  }
+.log-item.danger  { border-color: var(--red);    }
+.log-time { color: var(--text-muted); font-family: var(--font-mono); flex-shrink: 0; }
+.log-msg  { color: var(--text-sub); line-height: 1.4; }
+
+/* ─── Trend Charts ────────────────────────────────────── */
+.chart-wrap { position: relative; height: 200px; }
+
+/* ─── Video Panel (Jitsi Meet) ────────────────────────── */
+.jitsi-container {
+  background: var(--bg0); border-radius: 8px; overflow: hidden;
+  position: relative; width: 100%; aspect-ratio: 16/9;
+}
+.jitsi-container iframe { border-radius: 8px; }
+.jitsi-placeholder {
+  position: absolute; inset: 0;
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: 12px; color: var(--text-muted); font-size: .85rem;
+}
+.jitsi-placeholder-icon { font-size: 40px; opacity: .5; }
+.video-controls { display: flex; gap: 8px; margin-top: 10px; flex-wrap: wrap; align-items: center; }
+.jitsi-status {
+  display: flex; align-items: center; gap: 7px;
+  font-size: .75rem; color: var(--text-muted);
+  padding: 5px 12px; border-radius: 6px;
+  background: var(--bg2); border: 1px solid var(--border);
+  transition: all .3s ease;
+}
+.jitsi-status.connected { color: var(--green); border-color: rgba(34,211,165,.25); }
+.jitsi-status.connecting { color: var(--amber); border-color: rgba(251,191,36,.25); }
+.jitsi-status.waiting { color: var(--sky); border-color: rgba(56,189,248,.25); }
+.jitsi-status.error { color: var(--red); border-color: rgba(248,113,113,.25); }
+.jitsi-status.reconnecting { color: var(--amber); border-color: rgba(251,191,36,.25); animation: jitsi-pulse 1.5s ease-in-out infinite; }
+@keyframes jitsi-pulse { 0%,100% { opacity: 1; } 50% { opacity: .5; } }
+.jitsi-room-info {
+  display: flex; align-items: center; gap: 8px;
+  margin-top: 8px; flex-wrap: wrap;
+}
+.jitsi-room-input {
+  background: var(--bg2); border: 1px solid var(--border-m); color: var(--text);
+  padding: 5px 10px; border-radius: 6px; font-family: var(--font-mono);
+  font-size: .72rem; width: 220px; outline: none; transition: border-color .2s;
+}
+.jitsi-room-input:focus { border-color: var(--sky); }
+.jitsi-room-input::placeholder { color: var(--text-dim); }
+.btn-jitsi-join {
+  background: linear-gradient(135deg, #22d3a5 0%, #38bdf8 100%);
+  color: #050a14; font-weight: 700;
+  box-shadow: 0 0 16px rgba(34,211,165,.2);
+}
+.btn-jitsi-join:hover { box-shadow: 0 0 24px rgba(34,211,165,.35); }
+.btn-jitsi-leave {
+  background: var(--red-dim); color: var(--red);
+  border: 1px solid rgba(248,113,113,.3);
+}
+.btn-jitsi-leave:hover { background: rgba(248,113,113,.2); }
+
+/* ─── Firebase Status ─────────────────────────────────── */
+.fb-badge {
+  display: inline-flex; align-items: center; gap: 6px;
+  font-size: .68rem; color: var(--text-muted);
+  padding: 3px 10px; border-radius: 4px;
+  background: var(--bg2); border: 1px solid var(--border);
+}
+.fb-dot {
+  width: 6px; height: 6px; border-radius: 50%;
+  background: var(--text-muted);
+}
+.fb-badge.ok .fb-dot { background: var(--green); }
+.fb-badge.err .fb-dot { background: var(--red); }
+
+/* ─── Section dividers ────────────────────────────────── */
+.section-title {
+  font-size: .65rem; font-weight: 600; letter-spacing: .12em;
+  text-transform: uppercase; color: var(--text-muted);
+  margin: 22px 0 12px;
+  display: flex; align-items: center; gap: 10px;
+}
+.section-title::after {
+  content: ''; flex: 1; height: 1px; background: var(--border);
+}
+
+/* ─── Footer ──────────────────────────────────────────── */
+.footer { margin-top: 36px; text-align: center; font-size: .68rem; color: var(--text-dim); }
+
+@media(prefers-reduced-motion:reduce) { *, *::before, *::after { animation:none!important; transition:none!important; } }
+</style>
+</head>
+
+<body>
+<div class="app">
+
+<!-- ── Top Bar ─────────────────────────────────────────── -->
+<div class="topbar">
+  <div class="brand">
+    <div class="brand-icon">👁</div>
+    <div class="brand-text">
+      <h1>Eye Blink <span>Patient Monitor</span></h1>
+      <p>ESP32 · IR Blink · MAX30102 · Firebase · Real-time IoT Dashboard</p>
+    </div>
+  </div>
+  <div class="topbar-right">
+    <div class="fb-badge" id="fbBadge"><div class="fb-dot"></div><span id="fbLabel">Firebase</span></div>
+    <div class="conn-pill" id="connPill"><div class="conn-dot"></div><span id="connLabel">Disconnected</span></div>
+  </div>
+</div>
+
+<!-- ── Config Row ──────────────────────────────────────── -->
+<div class="config-row">
+  <label>ESP32 IP</label>
+  <input class="cfg-input" id="espIP" value="192.168.1.100" placeholder="192.168.x.x"/>
+  <button class="btn btn-sky" id="btnConnect" onclick="connectWS()">Connect</button>
+  <label style="margin-left:8px">Firebase DB URL</label>
+  <input class="cfg-input" id="fbDbUrl" value="" placeholder="https://your-project-default-rtdb...firebasedatabase.app" style="width:340px"/>
+  <label>API Key</label>
+  <input class="cfg-input" id="fbApiKey" value="" placeholder="Firebase web API key" style="width:240px"/>
+  <button class="btn btn-sky" id="btnFbConnect" onclick="initFirebase()">Connect Firebase</button>
+  <button class="btn btn-outline" id="btnClearTrends" onclick="clearTrendData()">Clear Trends</button>
+</div>
+
+<!-- ── Diagnostics Row ─────────────────────────────────── -->
+<div id="diagRow" style="display:flex;gap:10px;margin-bottom:14px;flex-wrap:wrap;font-size:.72rem">
+  <div style="background:var(--bg1);border:1px solid var(--border);border-radius:6px;padding:8px 14px;flex:1;min-width:200px">
+    <div style="color:var(--text-muted);margin-bottom:4px;letter-spacing:.08em;text-transform:uppercase;font-size:.62rem">WebSocket</div>
+    <div id="diagWS" style="color:var(--text-sub)">Not connected — enter ESP32 IP and click Connect</div>
+  </div>
+  <div style="background:var(--bg1);border:1px solid var(--border);border-radius:6px;padding:8px 14px;flex:1;min-width:200px">
+    <div style="color:var(--text-muted);margin-bottom:4px;letter-spacing:.08em;text-transform:uppercase;font-size:.62rem">Firebase</div>
+    <div id="diagFB" style="color:var(--text-sub)">Not connected — enter DB URL and API Key, click Connect Firebase</div>
+  </div>
+  <div style="background:var(--bg1);border:1px solid var(--border);border-radius:6px;padding:8px 14px;flex:1;min-width:200px">
+    <div style="color:var(--text-muted);margin-bottom:4px;letter-spacing:.08em;text-transform:uppercase;font-size:.62rem">Troubleshoot</div>
+    <div style="color:var(--text-sub)">1. Phone/PC must be on same WiFi as ESP32<br>2. Check Serial Monitor for ESP32 IP<br>3. Firebase rules must allow read/write</div>
+  </div>
+</div>
+
+<!-- ── Alert Banner ────────────────────────────────────── -->
+<div class="alert-banner" id="alertBanner">
+  <div class="alert-left">
+    <div class="alert-icon">🚨</div>
+    <div>
+      <div class="alert-msg" id="alertMsg">Emergency Alert</div>
+      <div class="alert-sub" id="alertSub">Triggered by blink pattern or vitals threshold</div>
+    </div>
+  </div>
+  <button class="btn btn-outline" style="border-color:var(--red);color:var(--red)" onclick="ackAlert()">Acknowledge</button>
+</div>
+
+<!-- ══════════════════════════════════════════════════════
+     SECTION 1 — VITALS
+════════════════════════════════════════════════════════ -->
+<div class="section-title">Patient Vitals — Live</div>
+<div class="grid">
+
+  <!-- Heart Rate -->
+  <div class="card g3" id="hrCard">
+    <div class="card-eyebrow">Heart Rate</div>
+    <div class="vital-ring-wrap">
+      <div class="vital-ring">
+        <svg viewBox="0 0 100 100">
+          <circle class="vr-track" cx="50" cy="50" r="45"/>
+          <circle class="vr-fill" id="hrArc" cx="50" cy="50" r="45" stroke="#22d3a5"/>
+        </svg>
+        <div class="vital-inner">
+          <div class="vital-num" id="hrVal">--</div>
+          <div class="vital-unit">bpm</div>
+        </div>
+      </div>
+      <div class="vital-label">Heart Rate</div>
+      <div class="vital-status" id="hrStatus">Awaiting data</div>
+    </div>
+  </div>
+
+  <!-- SpO2 -->
+  <div class="card g3" id="spo2Card">
+    <div class="card-eyebrow">Blood Oxygen · SpO₂</div>
+    <div class="vital-ring-wrap">
+      <div class="vital-ring">
+        <svg viewBox="0 0 100 100">
+          <circle class="vr-track" cx="50" cy="50" r="45"/>
+          <circle class="vr-fill" id="spo2Arc" cx="50" cy="50" r="45" stroke="#38bdf8"/>
+        </svg>
+        <div class="vital-inner">
+          <div class="vital-num" id="spo2Val">--</div>
+          <div class="vital-unit">%</div>
+        </div>
+      </div>
+      <div class="vital-label">SpO₂</div>
+      <div class="vital-status" id="spo2Status">Awaiting data</div>
+    </div>
+  </div>
+
+  <!-- PERCLOS -->
+  <div class="card g3" id="perclosCard">
+    <div class="card-eyebrow">PERCLOS · 60 s window</div>
+    <div class="perclos-wrap">
+      <svg class="perclos-arc-svg" viewBox="0 0 200 120">
+        <path d="M 20 110 A 80 80 0 0 1 180 110" fill="none" stroke="#162035" stroke-width="14" stroke-linecap="round"/>
+        <path id="perclosArc" d="M 20 110 A 80 80 0 0 1 180 110"
+          fill="none" stroke="url(#pcGrad)" stroke-width="14" stroke-linecap="round"
+          stroke-dasharray="251" stroke-dashoffset="251"/>
+        <defs>
+          <linearGradient id="pcGrad" x1="0%" y1="0%" x2="100%" y2="0%">
+            <stop offset="0%"   stop-color="#22d3a5"/>
+            <stop offset="55%"  stop-color="#fbbf24"/>
+            <stop offset="100%" stop-color="#f87171"/>
+          </linearGradient>
+        </defs>
+        <text x="16"  y="122" fill="#334155" font-size="9" text-anchor="middle">0%</text>
+        <text x="100" y="30"  fill="#334155" font-size="9" text-anchor="middle">50%</text>
+        <text x="184" y="122" fill="#334155" font-size="9" text-anchor="middle">100%</text>
+      </svg>
+      <div class="perclos-val"><span id="perclosVal">0</span><span>%</span></div>
+      <div class="perclos-lbl">Eye closure percentage</div>
+      <div class="perclos-warn-text" id="perclosWarn">⚠ PERCLOS &gt; 70% — Patient may be drowsy or unresponsive</div>
+      <div class="perclos-zones">
+        <div class="pz"><div class="pz-dot" style="background:#22d3a5"></div>Alert (0–30%)</div>
+        <div class="pz"><div class="pz-dot" style="background:#fbbf24"></div>Drowsy (30–70%)</div>
+        <div class="pz"><div class="pz-dot" style="background:#f87171"></div>Danger (&gt;70%)</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Eye Status -->
+  <div class="card g3" id="eyeCard">
+    <div class="card-eyebrow">Eye Status</div>
+    <div class="eye-orb" id="eyeOrb">👁</div>
+    <div class="eye-status-text" id="eyeStatusText">Eyes Open</div>
+    <div class="eye-timer" id="eyeTimer">0.0 s</div>
+    <div style="font-size:.65rem;color:var(--text-muted);text-align:center;margin-top:4px">closed duration</div>
+  </div>
+
+</div><!-- /vitals grid -->
+
+<!-- ══════════════════════════════════════════════════════
+     SECTION 2 — BLINK + APPLIANCES
+════════════════════════════════════════════════════════ -->
+<div class="section-title">Blink Command &amp; Appliance Control</div>
+<div class="grid">
+
+  <!-- Blink counter -->
+  <div class="card g4" id="blinkCard">
+    <div class="card-eyebrow">Blink Sequence</div>
+    <div class="blink-num-row">
+      <div class="blink-big" id="blinkNum">0</div>
+      <div class="blink-sub">blinks detected</div>
+    </div>
+    <div class="blink-bars">
+      <div class="bb" id="bb1"></div>
+      <div class="bb" id="bb2"></div>
+      <div class="bb" id="bb3"></div>
+      <div class="bb" id="bb4"></div>
+      <div class="bb" id="bb5"></div>
+      <div class="bb" id="bb6"></div>
+      <div class="bb" id="bb7"></div>
+    </div>
+    <div class="blink-hint" id="blinkHint">Awaiting blinks…</div>
+    <!-- Command reference -->
+    <div style="margin-top:14px;border-top:1px solid var(--border);padding-top:12px">
+      <div style="font-size:.65rem;color:var(--text-muted);margin-bottom:6px;letter-spacing:.08em;text-transform:uppercase">Command Map</div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:3px 10px;font-size:.68rem">
+        <div style="color:var(--text-sub)">1 blink</div><div style="color:var(--text-muted)">No action</div>
+        <div style="color:var(--red)">2 blinks</div><div style="color:var(--text-muted)">Emergency alert</div>
+        <div style="color:var(--green)">3 blinks</div><div style="color:var(--text-muted)">Toggle Appliance 1</div>
+        <div style="color:var(--sky)">4 blinks</div><div style="color:var(--text-muted)">Toggle Appliance 2</div>
+        <div style="color:var(--text-sub)">5–6 blinks</div><div style="color:var(--text-muted)">Reserved</div>
+        <div style="color:var(--red)">7+ blinks</div><div style="color:var(--text-muted)">Emergency alert</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Appliance 1 -->
+  <div class="card g4" id="appl1Card">
+    <div class="card-eyebrow">Appliance 1 · GPIO 14</div>
+    <div class="appl-header">
+      <div class="appl-icon" id="appl1Icon">💡</div>
+      <label class="switch">
+        <input type="checkbox" id="appl1Toggle" onchange="toggleAppl(1)"/>
+        <div class="sw-track"></div>
+        <div class="sw-thumb"></div>
+      </label>
+    </div>
+    <div class="appl-name">Appliance 1</div>
+    <div class="appl-state">
+      <div class="appl-dot" id="appl1Dot"></div>
+      <span id="appl1State">Off</span>
+    </div>
+    <div style="font-size:.65rem;color:var(--text-muted);margin-top:12px">3 blinks to toggle · or use switch above</div>
+  </div>
+
+  <!-- Appliance 2 -->
+  <div class="card g4" id="appl2Card">
+    <div class="card-eyebrow">Appliance 2 · GPIO 25</div>
+    <div class="appl-header">
+      <div class="appl-icon" id="appl2Icon">🔌</div>
+      <label class="switch">
+        <input type="checkbox" id="appl2Toggle" onchange="toggleAppl(2)"/>
+        <div class="sw-track"></div>
+        <div class="sw-thumb"></div>
+      </label>
+    </div>
+    <div class="appl-name">Appliance 2</div>
+    <div class="appl-state">
+      <div class="appl-dot" id="appl2Dot"></div>
+      <span id="appl2State">Off</span>
+    </div>
+    <div style="font-size:.65rem;color:var(--text-muted);margin-top:12px">4 blinks to toggle · or use switch above</div>
+  </div>
+
+</div>
+
+<!-- ══════════════════════════════════════════════════════
+     SECTION 3 — TREND CHARTS
+════════════════════════════════════════════════════════ -->
+<div class="section-title">Vitals Trend — Firebase Historical Data</div>
+<div class="grid">
+  <div class="card g6" id="hrChartCard">
+    <div class="card-eyebrow" style="margin-bottom:10px">Heart Rate — Last 48 h</div>
+    <div class="chart-wrap"><canvas id="hrChart"></canvas></div>
+  </div>
+  <div class="card g6" id="spo2ChartCard">
+    <div class="card-eyebrow" style="margin-bottom:10px">SpO₂ — Last 48 h</div>
+    <div class="chart-wrap"><canvas id="spo2Chart"></canvas></div>
+  </div>
+</div>
+
+<!-- ══════════════════════════════════════════════════════
+     SECTION 4 — VIDEO + LOG
+════════════════════════════════════════════════════════ -->
+<div class="section-title">Live Patient View &amp; Event Log</div>
+<div class="grid">
+
+  <!-- Live Video (Jitsi Meet) -->
+  <div class="card g6" id="videoCard">
+    <div class="card-eyebrow">Patient Video · Jitsi Meet</div>
+    <div class="jitsi-container" id="jitsiContainer">
+      <div class="jitsi-placeholder" id="jitsiPlaceholder">
+        <div class="jitsi-placeholder-icon">📹</div>
+        <div>Click <strong>Join Video</strong> to start a meeting</div>
+      </div>
+    </div>
+    <div class="jitsi-room-info">
+      <label style="font-size:.7rem;color:var(--text-muted);white-space:nowrap">Room ID</label>
+      <input class="jitsi-room-input" id="jitsiRoomName" placeholder="auto-generated room name"/>
+      <button class="btn btn-outline" style="font-size:.68rem;padding:4px 10px" onclick="generateNewRoom()">🔄 New Room</button>
+    </div>
+    <div class="video-controls">
+      <button class="btn btn-jitsi-join" id="btnJoinVideo" onclick="joinJitsiMeeting()">📹 Join Video</button>
+      <button class="btn btn-jitsi-leave" id="btnLeaveVideo" onclick="leaveJitsiMeeting()" disabled>⏹ Leave Video</button>
+      <div class="jitsi-status" id="jitsiStatus">📹 Ready to connect</div>
+    </div>
+    <div style="font-size:.65rem;color:var(--text-muted);margin-top:10px;padding:8px 10px;
+                background:var(--bg2);border-radius:6px;border:1px solid var(--border);line-height:1.6">
+      <strong style="color:var(--text-sub)">How to use:</strong><br>
+      1. Click <strong>Join Video</strong> — a Jitsi Meet room is created automatically.<br>
+      2. Share the <strong>Room ID</strong> with the patient (or scan a QR code from their device).<br>
+      3. Patient joins from phone/tablet/laptop at <code style="color:var(--sky)">https://meet.jit.si/ROOM_ID</code><br>
+      4. Video &amp; audio are handled entirely by Jitsi Meet — no extra setup needed.<br>
+      <span style="color:var(--amber)">🔒 Room names are randomly generated for privacy. Only authenticated caregivers see the room name.</span>
+    </div>
+  </div>
+
+  <!-- Event Log -->
+  <div class="card g6" id="logCard">
+    <div class="card-eyebrow" style="margin-bottom:10px">Event Log</div>
+    <div class="log-scroll" id="logList">
+      <div class="log-item info">
+        <span class="log-time">--:--:--</span>
+        <span class="log-msg">Dashboard loaded. Enter ESP32 IP and connect.</span>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<div class="footer">Eye Blink Assistive System · ESP32 + MAX30102 + Firebase · Assistive Technology for Paralysed Patients</div>
+</div><!-- /app -->
+
+<script>
+'use strict';
+// ══════════════════════════════════════════════════════════════════════════
+//  WEBSOCKET
+// ══════════════════════════════════════════════════════════════════════════
+let ws = null, wsReconnect = null;
+let prevState = {};
+
+function connectWS() {
+  const ip = document.getElementById('espIP').value.trim();
+  if (!ip) { log('Enter ESP32 IP address first', 'warn'); return; }
+  if (ws) { ws.close(); ws = null; }
+  clearTimeout(wsReconnect);
+  setConn('connecting');
+  diag('diagWS', `Connecting to ws://${ip}:81 …`, 'var(--amber)');
+  try {
+    ws = new WebSocket(`ws://${ip}:81`);
+    ws.onopen = () => {
+      setConn('ok');
+      diag('diagWS', `✓ Connected to ws://${ip}:81`, 'var(--green)');
+      log('WebSocket connected to ' + ip, 'info');
+    };
+    ws.onmessage = e => { try { handleData(JSON.parse(e.data)); } catch(_){} };
+    ws.onclose = () => {
+      setConn('err');
+      diag('diagWS', `✗ Lost connection to ws://${ip}:81 — retrying in 4 s. Make sure phone is on same WiFi as ESP32.`, 'var(--red)');
+      log('Connection lost — retrying in 4 s', 'warn');
+      wsReconnect = setTimeout(connectWS, 4000);
+    };
+    ws.onerror = () => {
+      setConn('err');
+      diag('diagWS', `✗ Cannot reach ws://${ip}:81 — check: (1) correct IP? (2) same WiFi network? (3) ESP32 powered on?`, 'var(--red)');
+    };
+  } catch(e) {
+    setConn('err');
+    diag('diagWS', '✗ Error: ' + e.message, 'var(--red)');
+    log('Error: ' + e.message, 'danger');
+  }
+}
+
+function diag(id, msg, color) {
+  const el = document.getElementById(id);
+  if (el) { el.textContent = msg; el.style.color = color || 'var(--text-sub)'; }
+}
+
+function wsSend(cmd) {
+  if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({cmd}));
+  else log('Not connected', 'warn');
+}
+
+function setConn(s) {
+  const pill  = document.getElementById('connPill');
+  const label = document.getElementById('connLabel');
+  pill.className = 'conn-pill ' + s;
+  label.textContent = {ok:'Connected', connecting:'Connecting…', err:'Disconnected'}[s] || 'Disconnected';
+}
+
+// ══════════════════════════════════════════════════════════════════════════
+//  DATA HANDLER
+// ══════════════════════════════════════════════════════════════════════════
+function handleData(d) {
+  updateVitals(d);
+  updateAppliance(1, d.relay1);
+  updateAppliance(2, d.relay2);
+  updateAlert(d.alert || d.emergency, d.emergency, d.vitalsAlertMsg);
+  updateEye(d.eyesClosed);
+  updateBlink(d.blinkCount || 0);
+  updatePERCLOS(d.perclos || 0);
+
+  // Log changes
+  if (d.relay1 !== prevState.relay1)
+    log('Appliance 1 → ' + (d.relay1 ? 'ON' : 'OFF'), d.relay1 ? 'success' : 'info');
+  if (d.relay2 !== prevState.relay2)
+    log('Appliance 2 → ' + (d.relay2 ? 'ON' : 'OFF'), d.relay2 ? 'success' : 'info');
+  if (d.alert && !prevState.alert)
+    log('⚠ Alert triggered' + (d.vitalsAlertMsg ? ': ' + d.vitalsAlertMsg : ''), 'danger');
+  if (!d.alert && prevState.alert)
+    log('Alert cleared', 'info');
+  if (d.apMode && !prevState.apMode)
+    log('ESP32 in AP fallback mode — IP: 192.168.4.1', 'warn');
+
+  prevState = {...d};
+}
+
+// ══════════════════════════════════════════════════════════════════════════
+//  VITALS UPDATE
+// ══════════════════════════════════════════════════════════════════════════
+function updateVitals(d) {
+  const valid = d.vitalsValid;
+  // Heart rate
+  const hr = d.heartRate || 0;
+  document.getElementById('hrVal').textContent = valid ? hr : '--';
+  const hrStatus = document.getElementById('hrStatus');
+  const hrArc    = document.getElementById('hrArc');
+  if (!valid) {
+    hrStatus.textContent = 'Finger on sensor?';
+    hrStatus.className   = 'vital-status';
+    setArc(hrArc, 0, '#22d3a5');
+  } else if (hr < 50 || hr > 120) {
+    hrStatus.textContent = hr < 50 ? '⚠ Low' : '⚠ High';
+    hrStatus.className   = 'vital-status danger';
+    setArc(hrArc, Math.min(hr/150, 1), '#f87171');
+  } else {
+    hrStatus.textContent = 'Normal';
+    hrStatus.className   = 'vital-status';
+    setArc(hrArc, Math.min(hr/150, 1), '#22d3a5');
+  }
+
+  // SpO2
+  const spo2 = d.spO2 || 0;
+  document.getElementById('spo2Val').textContent = valid ? spo2 : '--';
+  const s2Status = document.getElementById('spo2Status');
+  const s2Arc    = document.getElementById('spo2Arc');
+  if (!valid) {
+    s2Status.textContent = 'Finger on sensor?';
+    s2Status.className   = 'vital-status';
+    setArc(s2Arc, 0, '#38bdf8');
+  } else if (spo2 < 90) {
+    s2Status.textContent = '🚨 Critical low';
+    s2Status.className   = 'vital-status danger';
+    setArc(s2Arc, spo2/100, '#f87171');
+  } else if (spo2 < 95) {
+    s2Status.textContent = '⚠ Slightly low';
+    s2Status.className   = 'vital-status warn';
+    setArc(s2Arc, spo2/100, '#fbbf24');
+  } else {
+    s2Status.textContent = 'Normal';
+    s2Status.className   = 'vital-status';
+    setArc(s2Arc, spo2/100, '#38bdf8');
+  }
+}
+
+function setArc(el, frac, color) {
+  const circ = 2 * Math.PI * 45; // 283
+  el.style.strokeDashoffset = (circ - frac * circ).toFixed(2);
+  el.style.stroke = color;
+}
+
+// ══════════════════════════════════════════════════════════════════════════
+//  PERCLOS
+//  PERCLOS > 70% → show a warning on the dashboard (do not trigger buzzer)
+// ══════════════════════════════════════════════════════════════════════════
+function updatePERCLOS(pct) {
+  const rounded = Math.round(pct);
+  document.getElementById('perclosVal').textContent = rounded;
+  const arcLen = 251;
+  document.getElementById('perclosArc').setAttribute(
+    'stroke-dashoffset', (arcLen - arcLen * Math.min(pct, 100) / 100).toFixed(1)
+  );
+  // PERCLOS > 70% warning
+  const warnEl = document.getElementById('perclosWarn');
+  if (pct > 70) {
+    warnEl.classList.add('show');
+  } else {
+    warnEl.classList.remove('show');
+  }
+}
+
+// ══════════════════════════════════════════════════════════════════════════
+//  EYE STATUS
+// ══════════════════════════════════════════════════════════════════════════
+let eyeStart = null, eyeTimerInt = null;
+function updateEye(closed) {
+  const orb   = document.getElementById('eyeOrb');
+  const label = document.getElementById('eyeStatusText');
+  const timer = document.getElementById('eyeTimer');
+  orb.textContent = closed ? '😑' : '👁';
+  orb.classList.toggle('closed', !!closed);
+  label.textContent = closed ? 'Eyes Closed' : 'Eyes Open';
+  if (closed && !eyeStart) {
+    eyeStart = Date.now();
+    eyeTimerInt = setInterval(() => {
+      const s = (Date.now() - eyeStart) / 1000;
+      timer.textContent = s.toFixed(1) + ' s';
+      timer.className = 'eye-timer' + (s >= 3 ? ' danger' : s >= 1.5 ? ' warn' : '');
+    }, 100);
+  }
+  if (!closed && eyeStart) {
+    clearInterval(eyeTimerInt); eyeStart = null;
+    timer.textContent = '0.0 s'; timer.className = 'eye-timer';
+  }
+}
+
+// ══════════════════════════════════════════════════════════════════════════
+//  BLINK BARS
+// ══════════════════════════════════════════════════════════════════════════
+const blinkHints = {0:'Awaiting blinks…',1:'1 blink — no action',2:'2 blinks — 🚨 Emergency alert',
+  3:'3 blinks — Appliance 1 toggled',4:'4 blinks — Appliance 2 toggled',
+  5:'5 blinks — reserved',6:'6 blinks — reserved',7:'7+ blinks — 🚨 Emergency alert'};
+function updateBlink(n) {
+  document.getElementById('blinkNum').textContent = n;
+  for (let i = 1; i <= 7; i++)
+    document.getElementById('bb' + i).classList.toggle('lit', i <= n);
+  document.getElementById('blinkHint').textContent = blinkHints[Math.min(n, 7)] || n + ' blinks';
+}
+
+// ══════════════════════════════════════════════════════════════════════════
+//  APPLIANCES
+// ══════════════════════════════════════════════════════════════════════════
+function updateAppliance(n, on) {
+  document.getElementById('appl' + n + 'Card').classList.toggle('appl-on', !!on);
+  document.getElementById('appl' + n + 'State').textContent = on ? 'On' : 'Off';
+  document.getElementById('appl' + n + 'Toggle').checked = !!on;
+}
+function toggleAppl(n) {
+  const on = document.getElementById('appl' + n + 'Toggle').checked;
+  wsSend('relay' + n + '_' + (on ? 'on' : 'off'));
+  log('Manual: Appliance ' + n + ' → ' + (on ? 'ON' : 'OFF'), on ? 'success' : 'info');
+}
+
+// ══════════════════════════════════════════════════════════════════════════
+//  ALERT
+// ══════════════════════════════════════════════════════════════════════════
+function updateAlert(active, emergency, msg) {
+  const banner = document.getElementById('alertBanner');
+  const amsg   = document.getElementById('alertMsg');
+  const asub   = document.getElementById('alertSub');
+  banner.classList.toggle('show', !!active);
+  if (active) {
+    amsg.textContent = emergency ? '🚨 Emergency Alert' : '⚠ Alert';
+    asub.textContent = msg || (emergency
+      ? 'Eyes closed too long or emergency blink pattern detected'
+      : 'Alert triggered');
+  }
+}
+function ackAlert() { wsSend('alert_ack'); log('Alert acknowledged', 'info'); }
+
+// ══════════════════════════════════════════════════════════════════════════
+//  LOG
+// ══════════════════════════════════════════════════════════════════════════
+const MAX_LOG = 80;
+function log(msg, type='info') {
+  const list = document.getElementById('logList');
+  const t    = new Date().toTimeString().slice(0, 8);
+  const el   = document.createElement('div');
+  el.className = 'log-item ' + type;
+  el.innerHTML = `<span class="log-time">${t}</span><span class="log-msg">${msg}</span>`;
+  list.insertBefore(el, list.firstChild);
+  if (list.children.length > MAX_LOG) list.removeChild(list.lastChild);
+}
+
+// ══════════════════════════════════════════════════════════════════════════
+//  FIREBASE + TREND CHARTS
+// ══════════════════════════════════════════════════════════════════════════
+let fbApp = null, fbDb = null;
+let hrChart = null, spo2Chart = null;
+
+function initFirebase() {
+  const dbUrl  = document.getElementById('fbDbUrl').value.trim();
+  const apiKey = document.getElementById('fbApiKey').value.trim();
+
+  if (!dbUrl || !apiKey) {
+    log('⚠ Enter Firebase DB URL and API Key first', 'warn'); return;
+  }
+  if (!dbUrl.startsWith('https://')) {
+    log('⚠ DB URL must start with https://', 'warn'); return;
+  }
+
+  // Extract project ID from the DB URL for the config object
+  const urlParts = dbUrl.replace('https://', '').split('-default-rtdb');
+  const projectId = urlParts[0] || 'unknown';
+
+  try {
+    // Delete previous app instance if re-connecting
+    if (fbApp) { try { fbApp.delete(); } catch(_){} }
+
+    fbApp = firebase.initializeApp({
+      apiKey:      apiKey,
+      databaseURL: dbUrl,
+      projectId:   projectId
+    }, 'eyeblink-' + Date.now());
+
+    fbDb = firebase.database(fbApp);
+
+    // Quick connectivity test
+    fbDb.ref('.info/connected').on('value', snap => {
+      if (snap.val() === true) {
+        setFbBadge('ok', 'Firebase OK');
+        diag('diagFB', '✓ Firebase database connected', 'var(--green)');
+        log('✓ Firebase connected — DB: ' + dbUrl, 'success');
+      } else {
+        setFbBadge('err', 'Firebase offline');
+        diag('diagFB', '⚠ Firebase database offline — check URL and security rules', 'var(--amber)');
+        log('Firebase database offline or URL wrong', 'warn');
+      }
+    });
+
+    loadTrendData();
+    subscribeLatest();
+    // Jitsi Meet is independent — no Firebase signaling needed for video
+
+  } catch(e) {
+    log('✗ Firebase error: ' + e.message, 'danger');
+    setFbBadge('err', 'Firebase Error');
+    diag('diagFB', '✗ Firebase error: ' + e.message, 'var(--red)');
+    console.error('Firebase init error:', e);
+  }
+}
+
+function setFbBadge(s, label) {
+  const el = document.getElementById('fbBadge');
+  el.className = 'fb-badge ' + s;
+  document.getElementById('fbLabel').textContent = label;
+}
+
+// Subscribe to /latest for real-time updates from Firebase
+function subscribeLatest() {
+  if (!fbDb) return;
+  fbDb.ref('/latest').on('value', snap => {
+    const d = snap.val();
+    if (!d) return;
+    // Sync vitals from Firebase as backup if WS is disconnected
+    if (!ws || ws.readyState !== WebSocket.OPEN) {
+      updateVitals({ heartRate: d.heartRate, spO2: d.spO2, vitalsValid: true });
+      updatePERCLOS(d.perclos || 0);
+    }
+  });
+}
+
+// ── Chart setup ──────────────────────────────────────────
+const chartDefaults = {
+  responsive: true,
+  maintainAspectRatio: false,
+  animation: false,
+  plugins: { legend: { display: false } },
+  scales: {
+    x: {
+      ticks: { color: '#475569', font: { size: 10, family: "'Inter', sans-serif" }, maxTicksLimit: 8, maxRotation: 0 },
+      grid:  { color: 'rgba(56,189,248,0.05)' }
+    },
+    y: {
+      ticks: { color: '#475569', font: { size: 10, family: "'Inter', sans-serif" } },
+      grid:  { color: 'rgba(56,189,248,0.05)' }
+    }
+  }
+};
+
+function buildChart(id, label, color, yMin, yMax, thresholdVal) {
+  const ctx = document.getElementById(id).getContext('2d');
+  const datasets = [{
+    label, data: [], borderColor: color, backgroundColor: color + '18',
+    borderWidth: 2, pointRadius: 2, pointHoverRadius: 5,
+    tension: 0.4, fill: true
+  }];
+  if (thresholdVal != null) {
+    datasets.push({
+      label: 'Threshold', data: [],
+      borderColor: '#f87171', borderDash: [5, 4],
+      borderWidth: 1.5, pointRadius: 0, fill: false
+    });
+  }
+  return new Chart(ctx, {
+    type: 'line',
+    data: { labels: [], datasets },
+    options: {
+      ...chartDefaults,
+      scales: {
+        ...chartDefaults.scales,
+        y: { ...chartDefaults.scales.y, min: yMin, max: yMax }
+      }
+    }
+  });
+}
+
+function loadTrendData() {
+  if (!fbDb) return;
+  const cutoff = Date.now() - 48 * 60 * 60 * 1000; // 48 hours
+
+  fbDb.ref('/vitals_log').orderByChild('ts').startAt(cutoff).once('value', snap => {
+    const entries = [];
+    snap.forEach(child => entries.push(child.val()));
+    if (!entries.length) { log('No Firebase trend data found yet', 'info'); return; }
+
+    // Sort ascending
+    entries.sort((a, b) => a.ts - b.ts);
+    const labels   = entries.map(e => formatTime(e.ts));
+    const hrData   = entries.map(e => e.heartRate || 0);
+    const spo2Data = entries.map(e => e.spO2 || 0);
+
+    // Populate charts
+    hrChart.data.labels   = labels;
+    hrChart.data.datasets[0].data = hrData;
+    if (hrChart.data.datasets[1]) hrChart.data.datasets[1].data = labels.map(() => 50);
+    hrChart.update();
+
+    spo2Chart.data.labels  = labels;
+    spo2Chart.data.datasets[0].data = spo2Data;
+    if (spo2Chart.data.datasets[1]) spo2Chart.data.datasets[1].data = labels.map(() => 90);
+    spo2Chart.update();
+
+    log(`Loaded ${entries.length} trend readings from Firebase`, 'success');
+
+    // Subscribe for new entries added after the last loaded timestamp
+    const lastTs = entries[entries.length - 1].ts;
+    fbDb.ref('/vitals_log').orderByChild('ts').startAfter(lastTs).on('child_added', snap => {
+      appendTrendPoint(snap.val());
+    });
+  });
+}
+
+function appendTrendPoint(d) {
+  if (!hrChart || !spo2Chart) return;
+  const label = formatTime(d.ts);
+  const MAX_POINTS = 200;
+  [hrChart, spo2Chart].forEach(c => {
+    c.data.labels.push(label);
+    if (c.data.labels.length > MAX_POINTS) c.data.labels.shift();
+  });
+  hrChart.data.datasets[0].data.push(d.heartRate || 0);
+  if (hrChart.data.datasets[0].data.length > MAX_POINTS) hrChart.data.datasets[0].data.shift();
+  if (hrChart.data.datasets[1]) {
+    hrChart.data.datasets[1].data.push(50);
+    if (hrChart.data.datasets[1].data.length > MAX_POINTS) hrChart.data.datasets[1].data.shift();
+  }
+  spo2Chart.data.datasets[0].data.push(d.spO2 || 0);
+  if (spo2Chart.data.datasets[0].data.length > MAX_POINTS) spo2Chart.data.datasets[0].data.shift();
+  if (spo2Chart.data.datasets[1]) {
+    spo2Chart.data.datasets[1].data.push(90);
+    if (spo2Chart.data.datasets[1].data.length > MAX_POINTS) spo2Chart.data.datasets[1].data.shift();
+  }
+  hrChart.update('none');
+  spo2Chart.update('none');
+}
+
+function formatTime(ts) {
+  if (!ts) return '--';
+  const d = new Date(ts);
+  return d.getMonth()+1 + '/' + d.getDate() + ' ' +
+    d.getHours().toString().padStart(2,'0') + ':' + d.getMinutes().toString().padStart(2,'0');
+}
+
+function clearTrendData() {
+  if (!fbDb) { log('Firebase not connected', 'warn'); return; }
+  if (!confirm('Delete all historical trend data from Firebase? This cannot be undone.')) return;
+  fbDb.ref('/vitals_log').remove()
+    .then(() => {
+      if (hrChart)   { hrChart.data.labels   = []; hrChart.data.datasets.forEach(ds => ds.data = []); hrChart.update(); }
+      if (spo2Chart) { spo2Chart.data.labels = []; spo2Chart.data.datasets.forEach(ds => ds.data = []); spo2Chart.update(); }
+      log('Trend data cleared from Firebase', 'warn');
+    })
+    .catch(e => log('Clear failed: ' + e.message, 'danger'));
+}
+
+// ══════════════════════════════════════════════════════════════════════════
+//  LIVE VIDEO — Jitsi Meet External API
+//
+//  Uses the public Jitsi Meet instance (meet.jit.si) via the IFrame API.
+//  A random room name is generated for privacy. Both the patient and the
+//  caregiver join the same room — video/audio is handled entirely by Jitsi.
+//
+//  Status messages:
+//    📹 Waiting for patient…
+//    📡 Connecting to Jitsi…
+//    ✅ Video connected
+//    ⚠ Reconnecting…
+//    ❌ Unable to join meeting
+// ══════════════════════════════════════════════════════════════════════════
+let jitsiApi = null;
+let jitsiReconnectTimer = null;
+let jitsiCurrentRoom = '';
+
+// Generate a cryptographically random room name
+function generateRoomName() {
+  const chars = 'abcdefghijklmnopqrstuvwxyz0123456789';
+  const segments = [];
+  for (let s = 0; s < 3; s++) {
+    let seg = '';
+    for (let i = 0; i < 4; i++) {
+      const arr = new Uint32Array(1);
+      crypto.getRandomValues(arr);
+      seg += chars[arr[0] % chars.length];
+    }
+    segments.push(seg);
+  }
+  return 'eyeblink-' + segments.join('-');
+}
+
+function generateNewRoom() {
+  const name = generateRoomName();
+  document.getElementById('jitsiRoomName').value = name;
+  log('New room generated: ' + name, 'info');
+}
+
+function setJitsiStatus(text, statusClass) {
+  const el = document.getElementById('jitsiStatus');
+  el.textContent = text;
+  el.className = 'jitsi-status' + (statusClass ? ' ' + statusClass : '');
+}
+
+function joinJitsiMeeting() {
+  // If already in a meeting, warn
+  if (jitsiApi) {
+    log('Already in a video session — click Leave Video first', 'warn');
+    return;
+  }
+
+  // Get or generate room name
+  let roomName = document.getElementById('jitsiRoomName').value.trim();
+  if (!roomName) {
+    roomName = generateRoomName();
+    document.getElementById('jitsiRoomName').value = roomName;
+  }
+  jitsiCurrentRoom = roomName;
+
+  setJitsiStatus('📡 Connecting to Jitsi…', 'connecting');
+  log('📡 Connecting to Jitsi room: ' + roomName, 'info');
+
+  // Hide placeholder
+  const placeholder = document.getElementById('jitsiPlaceholder');
+  if (placeholder) placeholder.style.display = 'none';
+
+  try {
+    const container = document.getElementById('jitsiContainer');
+
+    jitsiApi = new JitsiMeetExternalAPI('meet.jit.si', {
+      roomName: roomName,
+      parentNode: container,
+      width: '100%',
+      height: '100%',
+      configOverwrite: {
+        startWithAudioMuted: false,
+        startWithVideoMuted: false,
+        disableDeepLinking: true,
+        prejoinPageEnabled: false,
+        enableClosePage: false,
+        disableInviteFunctions: true,
+        enableInsecureRoomNameWarning: false,
+        toolbarButtons: [
+          'microphone', 'camera', 'closedcaptions', 'desktop',
+          'fullscreen', 'fodeviceselection', 'chat', 'settings',
+          'videoquality', 'filmstrip', 'tileview'
+        ],
+        notifications: [],
+        hideConferenceSubject: false,
+        hideConferenceTimer: false
+      },
+      interfaceConfigOverwrite: {
+        SHOW_JITSI_WATERMARK: false,
+        SHOW_WATERMARK_FOR_GUESTS: false,
+        SHOW_BRAND_WATERMARK: false,
+        SHOW_POWERED_BY: false,
+        DEFAULT_BACKGROUND: '#050a14',
+        TOOLBAR_ALWAYS_VISIBLE: false,
+        FILM_STRIP_MAX_HEIGHT: 120,
+        DISABLE_JOIN_LEAVE_NOTIFICATIONS: false,
+        MOBILE_APP_PROMO: false
+      }
+    });
+
+    // ── Event Listeners ──
+    jitsiApi.addListener('videoConferenceJoined', (data) => {
+      setJitsiStatus('📹 Waiting for patient…', 'waiting');
+      log('✅ Joined Jitsi room: ' + roomName + ' (ID: ' + (data.id || 'unknown') + ')', 'success');
+      document.getElementById('btnJoinVideo').disabled = true;
+      document.getElementById('btnLeaveVideo').disabled = false;
+    });
+
+    jitsiApi.addListener('participantJoined', (data) => {
+      setJitsiStatus('✅ Video connected', 'connected');
+      log('👤 Participant joined: ' + (data.displayName || data.id), 'success');
+    });
+
+    jitsiApi.addListener('participantLeft', (data) => {
+      // Check if we're the only one left
+      jitsiApi.getNumberOfParticipants().then(count => {
+        if (count <= 1) {
+          setJitsiStatus('📹 Waiting for patient…', 'waiting');
+          log('👤 Participant left — waiting for patient to rejoin', 'info');
+        }
+      }).catch(() => {
+        setJitsiStatus('📹 Waiting for patient…', 'waiting');
+      });
+    });
+
+    jitsiApi.addListener('videoConferenceLeft', () => {
+      log('Video conference ended', 'info');
+      cleanupJitsi(false);
+    });
+
+    jitsiApi.addListener('readyToClose', () => {
+      cleanupJitsi(false);
+    });
+
+    // Handle connection failures — attempt auto-reconnect
+    jitsiApi.addListener('errorOccurred', (error) => {
+      log('⚠ Jitsi error: ' + (error.message || JSON.stringify(error)), 'warn');
+      setJitsiStatus('❌ Unable to join meeting', 'error');
+      attemptReconnect();
+    });
+
+    // Detect if Jitsi iframe fails to load
+    setTimeout(() => {
+      if (jitsiApi) {
+        try {
+          const iframe = container.querySelector('iframe');
+          if (!iframe) {
+            setJitsiStatus('❌ Unable to join meeting', 'error');
+            log('❌ Jitsi iframe failed to load — check internet connection', 'danger');
+          }
+        } catch(_) {}
+      }
+    }, 10000);
+
+  } catch (e) {
+    setJitsiStatus('❌ Unable to join meeting', 'error');
+    log('❌ Jitsi error: ' + e.message, 'danger');
+    cleanupJitsi(false);
+  }
+}
+
+function leaveJitsiMeeting() {
+  if (jitsiApi) {
+    try { jitsiApi.dispose(); } catch(_) {}
+  }
+  cleanupJitsi(true);
+  log('Left video meeting', 'info');
+}
+
+function cleanupJitsi(showPlaceholder) {
+  jitsiApi = null;
+  clearTimeout(jitsiReconnectTimer);
+  document.getElementById('btnJoinVideo').disabled = false;
+  document.getElementById('btnLeaveVideo').disabled = true;
+  setJitsiStatus('📹 Ready to connect', '');
+
+  if (showPlaceholder) {
+    const placeholder = document.getElementById('jitsiPlaceholder');
+    if (placeholder) placeholder.style.display = 'flex';
+    // Clear any leftover iframes
+    const container = document.getElementById('jitsiContainer');
+    const iframes = container.querySelectorAll('iframe');
+    iframes.forEach(f => f.remove());
+  }
+}
+
+function attemptReconnect() {
+  if (jitsiReconnectTimer) return; // already trying
+  setJitsiStatus('⚠ Reconnecting…', 'reconnecting');
+  log('⚠ Attempting to reconnect to Jitsi in 5 seconds…', 'warn');
+
+  jitsiReconnectTimer = setTimeout(() => {
+    jitsiReconnectTimer = null;
+    if (jitsiApi) {
+      try { jitsiApi.dispose(); } catch(_) {}
+      jitsiApi = null;
+    }
+    // Clear container
+    const container = document.getElementById('jitsiContainer');
+    const iframes = container.querySelectorAll('iframe');
+    iframes.forEach(f => f.remove());
+    const placeholder = document.getElementById('jitsiPlaceholder');
+    if (placeholder) placeholder.style.display = 'none';
+
+    // Restore room name and rejoin
+    if (jitsiCurrentRoom) {
+      document.getElementById('jitsiRoomName').value = jitsiCurrentRoom;
+    }
+    joinJitsiMeeting();
+  }, 5000);
+}
+
+// ══════════════════════════════════════════════════════════════════════════
+//  Auto-connect if opened from ESP32 IP
+// ══════════════════════════════════════════════════════════════════════════
+window.addEventListener('load', () => {
+  const host = location.hostname;
+  // If opened from ESP32's own IP, auto-connect WebSocket on page load
+  if (host && host !== 'localhost' && host !== '127.0.0.1' && host !== '' && location.protocol !== 'file:') {
+    document.getElementById('espIP').value = host;
+    connectWS();
+  }
+  // Init blank charts immediately so the layout renders
+  hrChart   = buildChart('hrChart',   'Heart Rate (bpm)', '#22d3a5', 30,  180, 50);
+  spo2Chart = buildChart('spo2Chart', 'SpO₂ (%)',         '#38bdf8', 70,  100, 90);
+
+  // Generate an initial random Jitsi room name
+  generateNewRoom();
+});
+</script>
+</body>
+</html>
